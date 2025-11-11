@@ -1,0 +1,815 @@
+#!/usr/bin/env python3
+"""
+Dotfiles manager - Auto-discovery based dotfiles and local modifications manager.
+
+This tool automatically discovers what needs to be symlinked vs overlaid by:
+1. Scanning the private repo directory structure
+2. Checking .gitignore to determine if files should be symlinked (ignored) or overlaid (tracked)
+3. Handling all git skip-worktree operations transparently
+"""
+
+import os
+import sys
+import subprocess
+import shutil
+from pathlib import Path
+import argparse
+from typing import List, Tuple, Set
+import fnmatch
+
+# Embedded README content for enhanced help display
+# This allows the full documentation to be available via --help without needing
+# to package or locate external files when dotman is installed to ~/.local/bin/
+README_CONTENT = r"""# Private Repository Management
+
+This repository manages private, local-only files for any work-related project that should not be committed to the shared repository. It uses the `dotman` tool to automatically discover and manage two types of files:
+
+1. **Private files** - Files that don't belong in the shared repo at all (debugging scripts, notes, local configs)
+2. **Local modifications** - Temporary changes to tracked files that should stay local
+
+The `dotman` tool automatically discovers what files to manage by scanning the directory structure and checking `.gitignore` patterns - no manual configuration needed!
+
+## Repository Structure
+
+```
+private/
+├── .vscode/settings.json          # VSCode settings
+└── BrainDump.md                   # Private notes
+```
+
+## Setup
+
+### Configuration
+
+`dotman` needs to know two paths:
+- **SRC**: Your private repo with dotfiles (e.g., `~/dotfiles/private`)
+- **DST**: Your working directory (e.g., `~/work-project`)
+
+Configuration is loaded in this order (first found wins):
+
+1. **`.dotmanrc` file** (recommended for per-project config):
+   ```bash
+   SRC=/home/wware/dotfiles/private
+   DST=/home/wware/work-project
+   ```
+
+2. **Environment variables**:
+   ```bash
+   export DOTMAN_SRC=~/dotfiles/private
+   export DOTMAN_DST=~/work-project
+   ```
+
+3. **`.env` file**:
+   ```bash
+   DOTMAN_SRC=/home/wware/dotfiles/private
+   DOTMAN_DST=/home/wware/work-project
+   ```
+
+### Initial Setup
+
+1. Clone this private repo:
+   ```bash
+   cd ~
+   git clone <private-repo-url> dotfiles
+   ```
+
+2. Create configuration (choose one method):
+   ```bash
+   # Option 1: .dotmanrc file (recommended)
+   cd ~/dotfiles
+   cat > .dotmanrc << EOF
+   SRC=$HOME/dotfiles/private
+   DST=$HOME/work-project
+   EOF
+
+   # Option 2: Environment variables in your shell rc
+   echo 'export DOTMAN_SRC=~/dotfiles/private' >> ~/.bashrc
+   echo 'export DOTMAN_DST=~/work-project' >> ~/.bashrc
+   ```
+
+3. Run the setup to create symlinks and apply local modifications:
+   ```bash
+   cd ~/dotfiles
+   ./dotman setup
+   ```
+
+### Using from PATH
+
+Once configured, you can put `dotman` on your PATH for use anywhere:
+
+```bash
+# Copy or symlink to a directory in your PATH
+sudo ln -s ~/dotfiles/dotman /usr/local/bin/dotman
+
+# Now use from any directory (if using .dotmanrc in that directory)
+cd ~/work-project
+dotman status
+```
+
+That's it! `dotman` will automatically:
+- Discover all files in `private/`
+- Create symlinks for files that match `.gitignore` patterns (private files)
+- Apply local modifications from `backups/` directory (overlay files)
+- Handle all git skip-worktree operations transparently
+
+## Working with Private Files
+
+### Adding New Private Files
+
+1. Create the file in `private/` with the same relative path
+2. Add the file to `work-project/.gitignore` (so it's treated as a symlink)
+3. Run `./dotman setup` to create the symlink
+
+The tool will automatically discover the new file and create the symlink based on the `.gitignore` pattern.
+
+### Editing Private Files
+
+Just edit them normally - they're symlinked, so changes automatically go to the private repo. Commit and push to preserve your changes.
+
+## Working with Local Modifications
+
+These are files that **are** tracked in the shared repo, but you want to make local changes that shouldn't be committed.
+
+### Viewing Your Local Changes
+
+```bash
+./dotman diff
+```
+
+Shows a clean diff of all your local modifications.
+
+### Viewing Current Status
+
+```bash
+./dotman status
+```
+
+Shows which files are symlinked, which have local modifications, and their protection status.
+
+### Reverting to Original State
+
+```bash
+./dotman reset           # Reset to clean state
+./dotman reset --restore # Reset and immediately restore your changes
+```
+
+### Restoring Your Changes
+
+```bash
+./dotman restore
+```
+
+Reapplies all your local modifications after a reset.
+
+### Adding New Local Modifications
+
+1. Make your changes to a tracked file in `work-project`
+2. Copy it to `backups/` with the same relative path in this repo
+3. Run `./dotman setup` or `./dotman restore`
+
+The tool automatically detects files in the `backups/` directory and applies them with proper git protection.
+
+### How Local Modifications Work
+
+Local modifications are automatically protected using git's `--skip-worktree` feature, which:
+- Keeps files tracked by git but ignores local changes
+- Prevents accidental commits of your private modifications
+- Allows free editing without git noticing
+
+**All skip-worktree operations are handled automatically by `dotman`** - you never need to run git commands manually.
+
+**Important**: If upstream changes these files (someone else commits to them), you'll need to:
+1. `./dotman reset` (to accept upstream changes)
+2. `git pull` (to get the latest changes)
+3. `./dotman restore` (to reapply your modifications)
+
+## dotman Command Reference
+
+### dotman setup
+Sets up symlinks and applies local modifications. Run after cloning or to restore your local changes.
+
+```bash
+./dotman setup
+```
+
+### dotman status
+Shows current status of all symlinks and local modifications.
+
+```bash
+./dotman status
+```
+
+### dotman diff
+Shows diffs for files with local modifications.
+
+```bash
+./dotman diff
+```
+
+### dotman reset
+Reverts local modifications to original state. Use `--restore` to automatically reapply afterwards.
+
+```bash
+./dotman reset           # Reset to clean state
+./dotman reset --restore # Reset and restore in one step
+```
+
+### dotman restore
+Reapplies your local modifications after a reset.
+
+```bash
+./dotman restore
+```
+
+## Quick Reference
+
+```bash
+# Fresh setup on new machine
+cd ~
+git clone <private-repo-url> dotfiles
+cd dotfiles
+./dotman setup
+
+# See current status
+./dotman status
+
+# See what you've changed
+./dotman diff
+
+# Reset to clean state and restore changes
+./dotman reset --restore
+
+# Just restore your changes
+./dotman restore
+```
+
+## Benefits
+
+- **Auto-discovery**: No manual file lists to maintain - just add files and they're detected
+- **Simple commands**: Single tool with intuitive commands replaces multiple complex scripts
+- **Transparent git operations**: All skip-worktree complexity hidden from users
+- **Version control for private files**: Track your debugging scripts, notes, and local configs
+- **Separate change history**: Your private tweaks don't clutter the shared repo's history
+- **Easy reset**: Return to clean state for testing, restore changes instantly
+- **Portable setup**: Clone on a new machine and run one command to get working
+- **Clear separation**: Physical separation between public and private files
+
+## How It Works
+
+The `dotman` tool provides a much simpler user experience by:
+
+1. **Auto-discovering files** by scanning `private/` directory structure
+2. **Using .gitignore patterns** to automatically determine:
+   - Files matching `.gitignore` → Create symlinks (private files)
+   - Files in `backups/` directory → Apply as overlays (local modifications)
+3. **Handling all git operations** transparently (no more manual skip-worktree commands)
+4. **Providing clear status** with ✓, ⚠, ✗ indicators for easy troubleshooting
+
+"""
+
+
+class DotmanShortHelpFormatter(argparse.HelpFormatter):
+    """Standard help formatter for -h (short help)."""
+    pass
+
+
+class DotmanLongHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom help formatter that includes the full README content for --help."""
+
+    def format_help(self):
+        # Get the standard help text first
+        help_text = super().format_help()
+
+        # Add the README content
+        return help_text + "\n" + "="*80 + "\nFULL DOCUMENTATION\n" + "="*80 + "\n\n" + README_CONTENT
+
+
+def load_config() -> Tuple[Path, Path]:
+    """
+    Load source and destination paths from (in order of precedence):
+    1. .dotmanrc file in current directory
+    2. Environment variables DOTMAN_SRC and DOTMAN_DST
+    3. .env file in current directory
+
+    Returns:
+        (source_path, destination_path) tuple
+
+    Raises:
+        RuntimeError: If configuration cannot be loaded
+    """
+    # Try .dotmanrc first
+    dotmanrc = Path.cwd() / ".dotmanrc"
+    if dotmanrc.exists():
+        config = {}
+        with open(dotmanrc) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    config[key.strip()] = value.strip().strip('"').strip("'")
+
+        src = config.get('SRC')
+        dst = config.get('DST')
+        if src and dst:
+            return Path(src).expanduser(), Path(dst).expanduser()
+
+    # Try environment variables
+    src = os.environ.get('DOTMAN_SRC')
+    dst = os.environ.get('DOTMAN_DST')
+    if src and dst:
+        return Path(src).expanduser(), Path(dst).expanduser()
+
+    # Try .env file
+    dotenv = Path.cwd() / ".env"
+    if dotenv.exists():
+        config = {}
+        with open(dotenv) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    config[key.strip()] = value.strip().strip('"').strip("'")
+
+        src = config.get('DOTMAN_SRC')
+        dst = config.get('DOTMAN_DST')
+        if src and dst:
+            return Path(src).expanduser(), Path(dst).expanduser()
+
+    # Nothing worked - raise error with helpful message
+    raise RuntimeError(
+        "Could not load dotman configuration. Please provide configuration via:\n"
+        "  1. .dotmanrc file with: SRC=/path/to/source\n"
+        "                          DST=/path/to/dest\n"
+        "  2. Environment variables: DOTMAN_SRC and DOTMAN_DST\n"
+        "  3. .env file with: DOTMAN_SRC=/path/to/source\n"
+        "                     DOTMAN_DST=/path/to/dest"
+    )
+
+
+# Configuration will be loaded when needed
+PRIVATE_REPO = None
+WORKING_DIR = None
+BACKUPS_DIR = None
+
+class GitIgnoreChecker:
+    """Helper to check if files match .gitignore patterns."""
+
+    def __init__(self, gitignore_path: Path):
+        self.patterns = []
+        if gitignore_path.exists():
+            with open(gitignore_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        self.patterns.append(line)
+
+    def is_ignored(self, file_path: str) -> bool:
+        """Check if a file path matches any .gitignore pattern."""
+        for pattern in self.patterns:
+            # Direct pattern match
+            if fnmatch.fnmatch(file_path, pattern):
+                return True
+
+            # Check if file is under an ignored directory
+            if '/' in file_path:
+                parts = file_path.split('/')
+                for i in range(len(parts)):
+                    # Check if any parent directory matches the pattern
+                    parent_path = '/'.join(parts[:i+1])
+                    if fnmatch.fnmatch(parent_path, pattern):
+                        return True
+                    # Check directory pattern without trailing slash
+                    if fnmatch.fnmatch(parent_path + '/', pattern):
+                        return True
+
+            # Check if pattern matches just the filename
+            filename = file_path.split('/')[-1]
+            if fnmatch.fnmatch(filename, pattern):
+                return True
+
+        return False
+
+class DotfilesManager:
+    def __init__(self):
+        try:
+            self.private_repo, self.working_dir = load_config()
+            self.backups_dir = self.private_repo / "backups"
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        self.gitignore_checker = GitIgnoreChecker(self.working_dir / ".gitignore")
+
+    def discover_files(self) -> Tuple[List[Tuple[Path, Path]], List[Tuple[Path, Path]]]:
+        """
+        Auto-discover symlinks and overlays by scanning private repo.
+
+        Returns:
+            (symlinks, overlays) where each is a list of (source, dest) tuples
+        """
+        symlinks = []
+        overlays = []
+
+        # Scan all files in private repo (excluding backups dir)
+        for root, dirs, files in os.walk(self.private_repo):
+            # Skip the backups directory for symlink discovery
+            if Path(root).name == "backups" or "backups" in Path(root).parts:
+                continue
+
+            root_path = Path(root)
+            for file in files:
+                source = root_path / file
+
+                # Calculate relative path from private repo root
+                rel_path = source.relative_to(self.private_repo)
+                dest = self.working_dir / rel_path
+
+                # Decide symlink vs overlay based on .gitignore
+                if self.gitignore_checker.is_ignored(str(rel_path)):
+                    symlinks.append((source, dest))
+                else:
+                    # Check if there's a backup version
+                    backup_path = self.backups_dir / rel_path
+                    if backup_path.exists():
+                        overlays.append((backup_path, dest))
+
+        # Also scan backups directory for additional overlays
+        if self.backups_dir.exists():
+            for root, dirs, files in os.walk(self.backups_dir):
+                root_path = Path(root)
+                for file in files:
+                    backup_source = root_path / file
+                    rel_path = backup_source.relative_to(self.backups_dir)
+                    dest = self.working_dir / rel_path
+
+                    # Only add if not already in overlays
+                    if (backup_source, dest) not in overlays:
+                        overlays.append((backup_source, dest))
+
+        return symlinks, overlays
+
+    def get_skip_worktree_files(self) -> Set[str]:
+        """Get list of files currently marked with --skip-worktree."""
+        try:
+            os.chdir(self.working_dir)
+            result = subprocess.run(['git', 'ls-files', '-v'],
+                                  capture_output=True, text=True, check=True)
+            skip_files = set()
+            for line in result.stdout.splitlines():
+                if line.startswith('S '):  # S indicates skip-worktree
+                    skip_files.add(line[2:])  # Remove 'S ' prefix
+            return skip_files
+        except subprocess.CalledProcessError:
+            return set()
+
+    def is_file_tracked_by_git(self, file_path: Path) -> bool:
+        """Check if a file is tracked by git."""
+        try:
+            os.chdir(self.working_dir)
+            rel_path = file_path.relative_to(self.working_dir)
+            result = subprocess.run(['git', 'ls-files', str(rel_path)],
+                                  capture_output=True, text=True)
+            return bool(result.stdout.strip())
+        except Exception:
+            return False
+
+    def setup_symlinks(self, symlinks: List[Tuple[Path, Path]]) -> None:
+        """Create symlinks for private files."""
+        print("=== Setting up symlinks for private files ===")
+
+        for source, dest in symlinks:
+            # Create parent directory if needed
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            # Check if symlink already exists and is correct
+            if dest.is_symlink() and dest.resolve() == source.resolve():
+                print(f"✓ {dest.relative_to(self.working_dir)} -> already linked")
+                continue
+
+            # Remove existing file/symlink if present
+            if dest.exists() or dest.is_symlink():
+                if dest.is_symlink():
+                    dest.unlink()
+                    print(f"⚠ Removed incorrect symlink: {dest.relative_to(self.working_dir)}")
+                else:
+                    print(f"⚠ File exists, skipping: {dest.relative_to(self.working_dir)}")
+                    continue
+
+            # Create the symlink
+            if source.exists():
+                dest.symlink_to(source)
+                print(f"✓ Created {dest.relative_to(self.working_dir)} -> {source.name}")
+            else:
+                print(f"✗ Source missing: {source}")
+
+    def apply_overlays(self, overlays: List[Tuple[Path, Path]]) -> None:
+        """Apply overlay files and manage skip-worktree."""
+        print("\n=== Applying local modifications ===")
+
+        os.chdir(self.working_dir)
+        current_skip_files = self.get_skip_worktree_files()
+
+        for source, dest in overlays:
+            if not source.exists():
+                print(f"✗ Backup not found: {source}")
+                continue
+
+            # Create parent directory if needed
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            # Copy the overlay file
+            shutil.copy2(source, dest)
+            rel_dest = str(dest.relative_to(self.working_dir))
+
+            # Manage skip-worktree if file is tracked by git
+            if self.is_file_tracked_by_git(dest):
+                if rel_dest not in current_skip_files:
+                    try:
+                        subprocess.run(['git', 'update-index', '--skip-worktree', rel_dest],
+                                     check=True, capture_output=True)
+                        print(f"✓ Applied overlay + skip-worktree: {rel_dest}")
+                    except subprocess.CalledProcessError:
+                        print(f"⚠ Applied overlay but skip-worktree failed: {rel_dest}")
+                else:
+                    print(f"✓ Applied overlay: {rel_dest}")
+            else:
+                print(f"✓ Applied overlay (untracked): {rel_dest}")
+
+    def status(self) -> None:
+        """Show current status of symlinks and overlays."""
+        symlinks, overlays = self.discover_files()
+        skip_files = self.get_skip_worktree_files()
+
+        print("=== Dotfiles Status ===")
+
+        print("\nPrivate Files (Symlinks):")
+        for source, dest in symlinks:
+            rel_dest = dest.relative_to(self.working_dir)
+            if dest.is_symlink() and dest.resolve() == source.resolve():
+                status = "✓ linked"
+            elif dest.exists():
+                status = "⚠ file exists (not symlinked)"
+            else:
+                status = "✗ missing"
+            print(f"  {rel_dest} -> {status}")
+
+        print("\nLocal Modifications (Overlays):")
+        for source, dest in overlays:
+            rel_dest = str(dest.relative_to(self.working_dir))
+            if dest.exists():
+                if rel_dest in skip_files:
+                    status = "✓ applied + protected"
+                elif self.is_file_tracked_by_git(dest):
+                    status = "⚠ applied but not protected"
+                else:
+                    status = "✓ applied (untracked)"
+            else:
+                status = "✗ not applied"
+            print(f"  {rel_dest} -> {status}")
+
+        # Show any extra skip-worktree files
+        overlay_files = {str(dest.relative_to(self.working_dir)) for _, dest in overlays}
+        extra_skip = skip_files - overlay_files
+        if extra_skip:
+            print("\nOther Skip-Worktree Files:")
+            for f in sorted(extra_skip):
+                print(f"  {f} -> ⚠ skip-worktree but no backup")
+
+    def diff(self) -> None:
+        """Show diffs for overlay files."""
+        _, overlays = self.discover_files()
+        skip_files = self.get_skip_worktree_files()
+
+        print("=== Local Modifications Diff ===")
+        os.chdir(self.working_dir)
+
+        # Temporarily unmark skip-worktree files to see diffs
+        files_to_remark = []
+        for _, dest in overlays:
+            rel_dest = str(dest.relative_to(self.working_dir))
+            if rel_dest in skip_files:
+                try:
+                    subprocess.run(['git', 'update-index', '--no-skip-worktree', rel_dest],
+                                 check=True, capture_output=True)
+                    files_to_remark.append(rel_dest)
+                except subprocess.CalledProcessError:
+                    pass
+
+        # Show the diff
+        try:
+            subprocess.run(['git', 'diff'] + files_to_remark, check=False)
+        except Exception:
+            pass
+
+        # Re-mark files
+        for f in files_to_remark:
+            try:
+                subprocess.run(['git', 'update-index', '--skip-worktree', f],
+                             check=True, capture_output=True)
+            except subprocess.CalledProcessError:
+                pass
+
+    def reset(self, restore: bool = False) -> None:
+        """Reset overlay files to HEAD state."""
+        _, overlays = self.discover_files()
+        skip_files = self.get_skip_worktree_files()
+
+        print("=== Resetting local modifications ===")
+        os.chdir(self.working_dir)
+
+        reset_files = []
+        for _, dest in overlays:
+            rel_dest = str(dest.relative_to(self.working_dir))
+            if self.is_file_tracked_by_git(dest):
+                reset_files.append(rel_dest)
+
+        # Unmark skip-worktree
+        for f in reset_files:
+            if f in skip_files:
+                try:
+                    subprocess.run(['git', 'update-index', '--no-skip-worktree', f],
+                                 check=True, capture_output=True)
+                except subprocess.CalledProcessError:
+                    pass
+
+        # Reset to HEAD
+        if reset_files:
+            try:
+                subprocess.run(['git', 'checkout', 'HEAD', '--'] + reset_files,
+                             check=False)
+                print(f"✓ Reset {len(reset_files)} files to HEAD")
+            except Exception:
+                print("⚠ Some files could not be reset")
+
+        # Restore overlays if requested
+        if restore:
+            print("\n=== Restoring local modifications ===")
+            self.apply_overlays(overlays)
+        else:
+            print("\nRun 'dotman restore' to reapply your local modifications")
+
+    def remove(self, force: bool = False) -> None:
+        """Remove all dotman modifications - revert git changes and delete symlinks."""
+        symlinks, overlays = self.discover_files()
+        skip_files = self.get_skip_worktree_files()
+
+        print("=== Removing all dotman modifications ===")
+
+        # Show what will be removed
+        symlink_count = len(symlinks)
+        overlay_count = len([dest for _, dest in overlays if dest.exists()])
+        skip_count = len(skip_files)
+
+        print("This will:")
+        if symlink_count > 0:
+            print(f"  • Remove {symlink_count} symlink(s)")
+        if overlay_count > 0:
+            print(f"  • Revert {overlay_count} local modification(s)")
+        if skip_count > 0:
+            print(f"  • Clear {skip_count} skip-worktree flag(s)")
+
+        if symlink_count == 0 and overlay_count == 0 and skip_count == 0:
+            print("Nothing to remove - no dotman modifications found.")
+            return
+
+        # Confirm unless --force is used
+        if not force:
+            response = input("\nContinue? [y/N]: ").strip().lower()
+            if response not in ['y', 'yes']:
+                print("Operation cancelled.")
+                return
+
+        print()
+        os.chdir(self.working_dir)
+
+        # 1. Remove symlinks
+        removed_symlinks = 0
+        for source, dest in symlinks:
+            if dest.is_symlink():
+                dest.unlink()
+                print(f"✓ Removed symlink: {dest.relative_to(self.working_dir)}")
+                removed_symlinks += 1
+            elif dest.exists():
+                print(f"⚠ Skipped non-symlink file: {dest.relative_to(self.working_dir)}")
+
+        # 2. Revert overlay files and clear skip-worktree
+        reverted_files = []
+        for _, dest in overlays:
+            if not dest.exists():
+                continue
+
+            rel_dest = str(dest.relative_to(self.working_dir))
+
+            # Clear skip-worktree if set
+            if rel_dest in skip_files:
+                try:
+                    subprocess.run(['git', 'update-index', '--no-skip-worktree', rel_dest],
+                                 check=True, capture_output=True)
+                except subprocess.CalledProcessError:
+                    pass
+
+            # Revert to HEAD if tracked by git
+            if self.is_file_tracked_by_git(dest):
+                try:
+                    subprocess.run(['git', 'checkout', 'HEAD', '--', rel_dest],
+                                 check=True, capture_output=True)
+                    reverted_files.append(rel_dest)
+                    print(f"✓ Reverted: {rel_dest}")
+                except subprocess.CalledProcessError:
+                    print(f"⚠ Could not revert: {rel_dest}")
+            else:
+                # For untracked files, just remove them
+                try:
+                    dest.unlink()
+                    print(f"✓ Removed untracked file: {rel_dest}")
+                except Exception:
+                    print(f"⚠ Could not remove: {rel_dest}")
+
+        # 3. Clear any remaining skip-worktree flags
+        remaining_skip = skip_files - {str(dest.relative_to(self.working_dir)) for _, dest in overlays}
+        for f in remaining_skip:
+            try:
+                subprocess.run(['git', 'update-index', '--no-skip-worktree', f],
+                             check=True, capture_output=True)
+                print(f"✓ Cleared skip-worktree: {f}")
+            except subprocess.CalledProcessError:
+                pass
+
+        print("\n✓ Removal complete!")
+        print(f"  • Removed {removed_symlinks} symlink(s)")
+        print(f"  • Reverted {len(reverted_files)} file(s)")
+        print(f"  • Cleared {len(skip_files)} skip-worktree flag(s)")
+
+    def setup(self) -> None:
+        """Full setup - create symlinks and apply overlays."""
+        symlinks, overlays = self.discover_files()
+        self.setup_symlinks(symlinks)
+        self.apply_overlays(overlays)
+        print("\n✓ Setup complete!")
+
+def main():
+    # Implement different help behaviors:
+    # -h: Short help (standard argparse output)
+    # --help: Long help (includes full embedded README documentation)
+    if '--help' in sys.argv:
+        parser = argparse.ArgumentParser(
+            description="Manage dotfiles and local modifications",
+            formatter_class=DotmanLongHelpFormatter,
+            add_help=False  # We'll add our own help handling
+        )
+        parser.add_argument('--help', action='help', help='Show this help message with full documentation')
+    else:
+        # Use standard formatter for -h (short help)
+        parser = argparse.ArgumentParser(
+            description="Manage dotfiles and local modifications",
+            formatter_class=DotmanShortHelpFormatter,
+            epilog="Use --help for full documentation."
+        )
+
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # Setup command
+    subparsers.add_parser('setup', help='Create symlinks and apply overlays')
+
+    # Status command
+    subparsers.add_parser('status', help='Show current status')
+
+    # Diff command
+    subparsers.add_parser('diff', help='Show diffs for local modifications')
+
+    # Reset command
+    reset_parser = subparsers.add_parser('reset', help='Reset local modifications to HEAD')
+    reset_parser.add_argument('--restore', action='store_true',
+                            help='Automatically restore local modifications after reset')
+
+    # Restore command
+    subparsers.add_parser('restore', help='Reapply local modifications')
+
+    # Remove command
+    remove_parser = subparsers.add_parser('remove', help='Remove all dotman modifications (revert git changes and delete symlinks)')
+    remove_parser.add_argument('--force', action='store_true',
+                              help='Skip confirmation prompt')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    manager = DotfilesManager()
+
+    if args.command == 'setup':
+        manager.setup()
+    elif args.command == 'status':
+        manager.status()
+    elif args.command == 'diff':
+        manager.diff()
+    elif args.command == 'reset':
+        manager.reset(restore=args.restore)
+    elif args.command == 'restore':
+        _, overlays = manager.discover_files()
+        manager.apply_overlays(overlays)
+    elif args.command == 'remove':
+        manager.remove(force=args.force)
+
+if __name__ == "__main__":
+    main()

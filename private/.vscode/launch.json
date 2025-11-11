@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger - Service",
+            "consoleName": "Service",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "/home/wware/platform/",
+            "program": "${workspaceRoot}/serve/service.py",
+            "python": "${workspaceRoot}/serve/.venv/bin/python3",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceRoot}",
+                "LOG_TO_FILE": "true",
+                "SERVICE_NAME": "service"
+            }
+        }
+    ],
+    "compounds": [
+    ]
+}

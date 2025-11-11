@@ -1,0 +1,8 @@
+# Dotman configuration file
+# Place this as .dotmanrc in the directory where you run dotman
+
+# Source: Private repository with your dotfiles/configs
+SRC=./private
+
+# Destination: Working directory where files should be symlinked/overlaid
+DST=/home/wware/my-git-repo
