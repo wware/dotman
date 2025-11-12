@@ -65,10 +65,10 @@ Configuration is loaded in this order (first found wins):
    echo 'export DOTMAN_DST=~/work-project' >> ~/.bashrc
    ```
 
-3. Run the setup to create symlinks and apply local modifications:
+3. Run the dirty command to create symlinks and apply local modifications:
    ```bash
    cd ~/dotfiles
-   ./dotman setup
+   ./dotman dirty
    ```
 
 ### Using from PATH
@@ -96,7 +96,7 @@ That's it! `dotman` will automatically:
 
 1. Create the file in `private/` with the same relative path
 2. Add the file to `work-project/.gitignore` (so it's treated as a symlink)
-3. Run `./dotman setup` to create the symlink
+3. Run `./dotman dirty` to create the symlink
 
 The tool will automatically discover the new file and create the symlink based on the `.gitignore` pattern.
 
@@ -124,28 +124,26 @@ Shows a clean diff of all your local modifications.
 
 Shows which files are symlinked, which have local modifications, and their protection status.
 
-### Reverting to Original State
-
-```bash
-./dotman reset           # Reset to clean state
-./dotman reset --restore # Reset and immediately restore your changes
-```
-
-### Restoring Your Changes
-
-```bash
-./dotman restore
-```
-
-Reapplies all your local modifications after a reset.
-
 ### Adding New Local Modifications
 
-1. Make your changes to a tracked file in `work-project`
-2. Copy it to `backups/` with the same relative path in this repo
-3. Run `./dotman setup` or `./dotman restore`
+**Method 1: Automatic (Recommended)**
+1. Create your modified file directly in the private repo with the same relative path as the target
+2. Run `./dotman dirty` - this will automatically create a backup and apply the overlay to the working directory
+3. **Make all further edits in the working directory** - the overlay is now active there
+4. Your changes in the working directory are protected by skip-worktree and won't be committed
 
-The tool automatically detects files in the `backups/` directory and applies them with proper git protection.
+**Note**: As a casual user, you never need to touch the `/backups` directory - dotman manages it automatically. After initial setup, do all your editing in the working directory, not in the private repo.
+
+**Method 2: Manual Backup**
+1. Make your changes to a tracked file in the working directory
+2. Copy it to `backups/` with the same relative path in the private repo
+3. Run `./dotman dirty` to apply the changes
+
+**Example**: To overlay `/foo/bar/baz.py` in your working directory:
+- **Automatic**: Create `/foo/bar/baz.py` in private repo → run `dotman dirty`
+- **Manual**: Create `/backups/foo/bar/baz.py` in private repo → run `dotman dirty`
+
+The tool automatically detects files in the private repo and `backups/` directory and applies them with proper git protection.
 
 ### How Local Modifications Work
 
@@ -157,17 +155,39 @@ Local modifications are automatically protected using git's `--skip-worktree` fe
 **All skip-worktree operations are handled automatically by `dotman`** - you never need to run git commands manually.
 
 **Important**: If upstream changes these files (someone else commits to them), you'll need to:
-1. `./dotman reset` (to accept upstream changes)
+1. `./dotman clean` (to remove local modifications)
 2. `git pull` (to get the latest changes)
-3. `./dotman restore` (to reapply your modifications)
+3. `./dotman dirty` (to reapply your modifications)
+
+### Completely Removing dotman
+
+If you want to completely remove all dotman modifications and return the working directory to its original state:
+
+```bash
+./dotman clean
+```
+
+This command will:
+- Remove all symlinks created by dotman
+- Revert all git-tracked files back to their HEAD state
+- Clear all skip-worktree flags
+- Remove any untracked overlay files
+
+The command shows exactly what will be removed and asks for confirmation unless you use `--force`.
+
+**Use cases for `clean`**:
+- Testing different dotman configurations
+- Switching to a different dotfiles management approach
+- Cleaning up before uninstalling dotman
+- Preparing a clean working directory for sharing
 
 ## dotman Command Reference
 
-### dotman setup
-Sets up symlinks and applies local modifications. Run after cloning or to restore your local changes.
+### dotman dirty
+Sets up symlinks and applies local modifications. Run after cloning or to apply your local changes.
 
 ```bash
-./dotman setup
+./dotman dirty
 ```
 
 ### dotman status
@@ -184,20 +204,15 @@ Shows diffs for files with local modifications.
 ./dotman diff
 ```
 
-### dotman reset
-Reverts local modifications to original state. Use `--restore` to automatically reapply afterwards.
+### dotman clean
+Completely removes all dotman modifications from the working directory. This reverts all git changes back to HEAD and deletes all symlinks.
 
 ```bash
-./dotman reset           # Reset to clean state
-./dotman reset --restore # Reset and restore in one step
+./dotman clean           # Interactive removal with confirmation
+./dotman clean --force   # Skip confirmation prompt
 ```
 
-### dotman restore
-Reapplies your local modifications after a reset.
-
-```bash
-./dotman restore
-```
+**Warning**: This command permanently removes all dotman modifications. Make sure your private files are committed to the private repo before running this command.
 
 ## Quick Reference
 
@@ -206,7 +221,7 @@ Reapplies your local modifications after a reset.
 cd ~
 git clone <private-repo-url> dotfiles
 cd dotfiles
-./dotman setup
+./dotman dirty
 
 # See current status
 ./dotman status
@@ -214,11 +229,8 @@ cd dotfiles
 # See what you've changed
 ./dotman diff
 
-# Reset to clean state and restore changes
-./dotman reset --restore
-
-# Just restore your changes
-./dotman restore
+# Completely remove all dotman modifications
+./dotman clean
 ```
 
 ## Benefits
@@ -228,7 +240,7 @@ cd dotfiles
 - **Transparent git operations**: All skip-worktree complexity hidden from users
 - **Version control for private files**: Track your debugging scripts, notes, and local configs
 - **Separate change history**: Your private tweaks don't clutter the shared repo's history
-- **Easy reset**: Return to clean state for testing, restore changes instantly
+- **Easy cleanup**: Return to clean state with `clean`, reapply changes with `dirty`
 - **Portable setup**: Clone on a new machine and run one command to get working
 - **Clear separation**: Physical separation between public and private files
 

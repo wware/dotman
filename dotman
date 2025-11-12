@@ -17,271 +17,18 @@ import argparse
 from typing import List, Tuple, Set
 import fnmatch
 
-# Embedded README content for enhanced help display
-# This allows the full documentation to be available via --help without needing
-# to package or locate external files when dotman is installed to ~/.local/bin/
-README_CONTENT = r"""# Private Repository Management
-
-This repository manages private, local-only files for any work-related project that should not be committed to the shared repository. It uses the `dotman` tool to automatically discover and manage two types of files:
-
-1. **Private files** - Files that don't belong in the shared repo at all (debugging scripts, notes, local configs)
-2. **Local modifications** - Temporary changes to tracked files that should stay local
-
-The `dotman` tool automatically discovers what files to manage by scanning the directory structure and checking `.gitignore` patterns - no manual configuration needed!
-
-## Repository Structure
-
-```
-private/
-├── .vscode/settings.json          # VSCode settings
-└── BrainDump.md                   # Private notes
-```
-
-## Setup
-
-### Configuration
-
-`dotman` needs to know two paths:
-- **SRC**: Your private repo with dotfiles (e.g., `~/dotfiles/private`)
-- **DST**: Your working directory (e.g., `~/work-project`)
-
-Configuration is loaded in this order (first found wins):
-
-1. **`.dotmanrc` file** (recommended for per-project config):
-   ```bash
-   SRC=/home/wware/dotfiles/private
-   DST=/home/wware/work-project
-   ```
-
-2. **Environment variables**:
-   ```bash
-   export DOTMAN_SRC=~/dotfiles/private
-   export DOTMAN_DST=~/work-project
-   ```
-
-3. **`.env` file**:
-   ```bash
-   DOTMAN_SRC=/home/wware/dotfiles/private
-   DOTMAN_DST=/home/wware/work-project
-   ```
-
-### Initial Setup
-
-1. Clone this private repo:
-   ```bash
-   cd ~
-   git clone <private-repo-url> dotfiles
-   ```
-
-2. Create configuration (choose one method):
-   ```bash
-   # Option 1: .dotmanrc file (recommended)
-   cd ~/dotfiles
-   cat > .dotmanrc << EOF
-   SRC=$HOME/dotfiles/private
-   DST=$HOME/work-project
-   EOF
-
-   # Option 2: Environment variables in your shell rc
-   echo 'export DOTMAN_SRC=~/dotfiles/private' >> ~/.bashrc
-   echo 'export DOTMAN_DST=~/work-project' >> ~/.bashrc
-   ```
-
-3. Run the setup to create symlinks and apply local modifications:
-   ```bash
-   cd ~/dotfiles
-   ./dotman setup
-   ```
-
-### Using from PATH
-
-Once configured, you can put `dotman` on your PATH for use anywhere:
-
-```bash
-# Copy or symlink to a directory in your PATH
-sudo ln -s ~/dotfiles/dotman /usr/local/bin/dotman
-
-# Now use from any directory (if using .dotmanrc in that directory)
-cd ~/work-project
-dotman status
-```
-
-That's it! `dotman` will automatically:
-- Discover all files in `private/`
-- Create symlinks for files that match `.gitignore` patterns (private files)
-- Apply local modifications from `backups/` directory (overlay files)
-- Handle all git skip-worktree operations transparently
-
-## Working with Private Files
-
-### Adding New Private Files
-
-1. Create the file in `private/` with the same relative path
-2. Add the file to `work-project/.gitignore` (so it's treated as a symlink)
-3. Run `./dotman setup` to create the symlink
-
-The tool will automatically discover the new file and create the symlink based on the `.gitignore` pattern.
-
-### Editing Private Files
-
-Just edit them normally - they're symlinked, so changes automatically go to the private repo. Commit and push to preserve your changes.
-
-## Working with Local Modifications
-
-These are files that **are** tracked in the shared repo, but you want to make local changes that shouldn't be committed.
-
-### Viewing Your Local Changes
-
-```bash
-./dotman diff
-```
-
-Shows a clean diff of all your local modifications.
-
-### Viewing Current Status
-
-```bash
-./dotman status
-```
-
-Shows which files are symlinked, which have local modifications, and their protection status.
-
-### Reverting to Original State
-
-```bash
-./dotman reset           # Reset to clean state
-./dotman reset --restore # Reset and immediately restore your changes
-```
-
-### Restoring Your Changes
-
-```bash
-./dotman restore
-```
-
-Reapplies all your local modifications after a reset.
-
-### Adding New Local Modifications
-
-1. Make your changes to a tracked file in `work-project`
-2. Copy it to `backups/` with the same relative path in this repo
-3. Run `./dotman setup` or `./dotman restore`
-
-The tool automatically detects files in the `backups/` directory and applies them with proper git protection.
-
-### How Local Modifications Work
-
-Local modifications are automatically protected using git's `--skip-worktree` feature, which:
-- Keeps files tracked by git but ignores local changes
-- Prevents accidental commits of your private modifications
-- Allows free editing without git noticing
-
-**All skip-worktree operations are handled automatically by `dotman`** - you never need to run git commands manually.
-
-**Important**: If upstream changes these files (someone else commits to them), you'll need to:
-1. `./dotman reset` (to accept upstream changes)
-2. `git pull` (to get the latest changes)
-3. `./dotman restore` (to reapply your modifications)
-
-## dotman Command Reference
-
-### dotman setup
-Sets up symlinks and applies local modifications. Run after cloning or to restore your local changes.
-
-```bash
-./dotman setup
-```
-
-### dotman status
-Shows current status of all symlinks and local modifications.
-
-```bash
-./dotman status
-```
-
-### dotman diff
-Shows diffs for files with local modifications.
-
-```bash
-./dotman diff
-```
-
-### dotman reset
-Reverts local modifications to original state. Use `--restore` to automatically reapply afterwards.
-
-```bash
-./dotman reset           # Reset to clean state
-./dotman reset --restore # Reset and restore in one step
-```
-
-### dotman restore
-Reapplies your local modifications after a reset.
-
-```bash
-./dotman restore
-```
-
-## Quick Reference
-
-```bash
-# Fresh setup on new machine
-cd ~
-git clone <private-repo-url> dotfiles
-cd dotfiles
-./dotman setup
-
-# See current status
-./dotman status
-
-# See what you've changed
-./dotman diff
-
-# Reset to clean state and restore changes
-./dotman reset --restore
-
-# Just restore your changes
-./dotman restore
-```
-
-## Benefits
-
-- **Auto-discovery**: No manual file lists to maintain - just add files and they're detected
-- **Simple commands**: Single tool with intuitive commands replaces multiple complex scripts
-- **Transparent git operations**: All skip-worktree complexity hidden from users
-- **Version control for private files**: Track your debugging scripts, notes, and local configs
-- **Separate change history**: Your private tweaks don't clutter the shared repo's history
-- **Easy reset**: Return to clean state for testing, restore changes instantly
-- **Portable setup**: Clone on a new machine and run one command to get working
-- **Clear separation**: Physical separation between public and private files
-
-## How It Works
-
-The `dotman` tool provides a much simpler user experience by:
-
-1. **Auto-discovering files** by scanning `private/` directory structure
-2. **Using .gitignore patterns** to automatically determine:
-   - Files matching `.gitignore` → Create symlinks (private files)
-   - Files in `backups/` directory → Apply as overlays (local modifications)
-3. **Handling all git operations** transparently (no more manual skip-worktree commands)
-4. **Providing clear status** with ✓, ⚠, ✗ indicators for easy troubleshooting
-
-"""
-
-
-class DotmanShortHelpFormatter(argparse.HelpFormatter):
-    """Standard help formatter for -h (short help)."""
-    pass
+# Note: For complete documentation, see the README.md file
 
 
 class DotmanLongHelpFormatter(argparse.RawDescriptionHelpFormatter):
-    """Custom help formatter that includes the full README content for --help."""
+    """Custom help formatter that refers to README file for --help."""
 
     def format_help(self):
         # Get the standard help text first
         help_text = super().format_help()
 
-        # Add the README content
-        return help_text + "\n" + "="*80 + "\nFULL DOCUMENTATION\n" + "="*80 + "\n\n" + README_CONTENT
+        # Add reference to README
+        return help_text + "\nFor complete documentation, see https://github.com/wware/dotman.\n"
 
 
 def load_config() -> Tuple[Path, Path]:
@@ -415,6 +162,10 @@ class DotfilesManager:
             if Path(root).name == "backups" or "backups" in Path(root).parts:
                 continue
 
+            # Skip .git directories - they shouldn't be managed by dotman
+            if ".git" in Path(root).parts:
+                continue
+
             root_path = Path(root)
             for file in files:
                 source = root_path / file
@@ -427,10 +178,15 @@ class DotfilesManager:
                 if self.gitignore_checker.is_ignored(str(rel_path)):
                     symlinks.append((source, dest))
                 else:
-                    # Check if there's a backup version
+                    # Auto-create backup if it doesn't exist
                     backup_path = self.backups_dir / rel_path
-                    if backup_path.exists():
-                        overlays.append((backup_path, dest))
+                    if not backup_path.exists():
+                        # Create backup directory structure
+                        backup_path.parent.mkdir(parents=True, exist_ok=True)
+                        # Copy the original file to backup
+                        shutil.copy2(source, backup_path)
+                        print(f"✓ Auto-created backup: {rel_path}")
+                    overlays.append((backup_path, dest))
 
         # Also scan backups directory for additional overlays
         if self.backups_dir.exists():
@@ -608,46 +364,7 @@ class DotfilesManager:
             except subprocess.CalledProcessError:
                 pass
 
-    def reset(self, restore: bool = False) -> None:
-        """Reset overlay files to HEAD state."""
-        _, overlays = self.discover_files()
-        skip_files = self.get_skip_worktree_files()
-
-        print("=== Resetting local modifications ===")
-        os.chdir(self.working_dir)
-
-        reset_files = []
-        for _, dest in overlays:
-            rel_dest = str(dest.relative_to(self.working_dir))
-            if self.is_file_tracked_by_git(dest):
-                reset_files.append(rel_dest)
-
-        # Unmark skip-worktree
-        for f in reset_files:
-            if f in skip_files:
-                try:
-                    subprocess.run(['git', 'update-index', '--no-skip-worktree', f],
-                                 check=True, capture_output=True)
-                except subprocess.CalledProcessError:
-                    pass
-
-        # Reset to HEAD
-        if reset_files:
-            try:
-                subprocess.run(['git', 'checkout', 'HEAD', '--'] + reset_files,
-                             check=False)
-                print(f"✓ Reset {len(reset_files)} files to HEAD")
-            except Exception:
-                print("⚠ Some files could not be reset")
-
-        # Restore overlays if requested
-        if restore:
-            print("\n=== Restoring local modifications ===")
-            self.apply_overlays(overlays)
-        else:
-            print("\nRun 'dotman restore' to reapply your local modifications")
-
-    def remove(self, force: bool = False) -> None:
+    def clean(self, force: bool = False) -> None:
         """Remove all dotman modifications - revert git changes and delete symlinks."""
         symlinks, overlays = self.discover_files()
         skip_files = self.get_skip_worktree_files()
@@ -739,7 +456,7 @@ class DotfilesManager:
         print(f"  • Reverted {len(reverted_files)} file(s)")
         print(f"  • Cleared {len(skip_files)} skip-worktree flag(s)")
 
-    def setup(self) -> None:
+    def dirty(self) -> None:
         """Full setup - create symlinks and apply overlays."""
         symlinks, overlays = self.discover_files()
         self.setup_symlinks(symlinks)
@@ -747,28 +464,16 @@ class DotfilesManager:
         print("\n✓ Setup complete!")
 
 def main():
-    # Implement different help behaviors:
-    # -h: Short help (standard argparse output)
-    # --help: Long help (includes full embedded README documentation)
-    if '--help' in sys.argv:
-        parser = argparse.ArgumentParser(
-            description="Manage dotfiles and local modifications",
-            formatter_class=DotmanLongHelpFormatter,
-            add_help=False  # We'll add our own help handling
-        )
-        parser.add_argument('--help', action='help', help='Show this help message with full documentation')
-    else:
-        # Use standard formatter for -h (short help)
-        parser = argparse.ArgumentParser(
-            description="Manage dotfiles and local modifications",
-            formatter_class=DotmanShortHelpFormatter,
-            epilog="Use --help for full documentation."
-        )
+    # Both -h and --help now use the same formatter with full documentation
+    parser = argparse.ArgumentParser(
+        description="Manage dotfiles and local modifications",
+        formatter_class=DotmanLongHelpFormatter
+    )
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # Setup command
-    subparsers.add_parser('setup', help='Create symlinks and apply overlays')
+    # Dirty command
+    subparsers.add_parser('dirty', help='Create symlinks and apply overlays')
 
     # Status command
     subparsers.add_parser('status', help='Show current status')
@@ -776,17 +481,9 @@ def main():
     # Diff command
     subparsers.add_parser('diff', help='Show diffs for local modifications')
 
-    # Reset command
-    reset_parser = subparsers.add_parser('reset', help='Reset local modifications to HEAD')
-    reset_parser.add_argument('--restore', action='store_true',
-                            help='Automatically restore local modifications after reset')
-
-    # Restore command
-    subparsers.add_parser('restore', help='Reapply local modifications')
-
-    # Remove command
-    remove_parser = subparsers.add_parser('remove', help='Remove all dotman modifications (revert git changes and delete symlinks)')
-    remove_parser.add_argument('--force', action='store_true',
+    # Clean command
+    clean_parser = subparsers.add_parser('clean', help='Remove all dotman modifications (revert git changes and delete symlinks)')
+    clean_parser.add_argument('--force', action='store_true',
                               help='Skip confirmation prompt')
 
     args = parser.parse_args()
@@ -797,19 +494,14 @@ def main():
 
     manager = DotfilesManager()
 
-    if args.command == 'setup':
-        manager.setup()
+    if args.command == 'dirty':
+        manager.dirty()
     elif args.command == 'status':
         manager.status()
     elif args.command == 'diff':
         manager.diff()
-    elif args.command == 'reset':
-        manager.reset(restore=args.restore)
-    elif args.command == 'restore':
-        _, overlays = manager.discover_files()
-        manager.apply_overlays(overlays)
-    elif args.command == 'remove':
-        manager.remove(force=args.force)
+    elif args.command == 'clean':
+        manager.clean(force=args.force)
 
 if __name__ == "__main__":
     main()
