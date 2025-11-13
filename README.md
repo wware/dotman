@@ -1,256 +1,257 @@
-# Private Repository Management
+# dotman
 
-This repository manages private, local-only files for any work-related project that should not be committed to the shared repository. It uses the `dotman` tool to automatically discover and manage two types of files:
+Track private files and local modifications that don't belong in your shared git repository.
 
-1. **Private files** - Files that don't belong in the shared repo at all (debugging scripts, notes, local configs)
-2. **Local modifications** - Temporary changes to tracked files that should stay local
+## What Problem Does This Solve?
 
-The `dotman` tool automatically discovers what files to manage by scanning the directory structure and checking `.gitignore` patterns - no manual configuration needed!
+When working on shared projects, you often need files that shouldn't be committed. While `.gitignore` handles build artifacts (`.o`, `.so`, `.pyc`, `__pycache__/`) and secrets (`.env`), you also need to manage:
+- Private debugging scripts and notes
+- Local IDE settings (`.vscode/settings.json`)
+- Temporary changes to tracked files for your development environment
+- Personal configuration tweaks
 
-## Repository Structure
+`dotman` manages these files in a separate private git repository (which can be located anywhere) while keeping them accessible in your working directory.
 
+## How Files Are Managed
+
+dotman automatically discovers and manages all files in your private repository. It decides how to handle each file based on whether it matches a `.gitignore` pattern:
+
+### 1. Private Files (Symlinked)
+Files that match patterns in working repository's `.gitignore` are symlinked.
+
+**How it works:**
+- Put the file in your private repository (same relative path as it should appear in working repo)
+- There should be a matching pattern in `.gitignore` in your working repo
+- dotman creates a symlink from the working directory to your private repo
+
+**Example:**
 ```
-private/
-├── .vscode/settings.json          # VSCode settings
-└── BrainDump.md                   # Private notes
+$SRC/.vscode/settings.json  →  (symlinked to) $DST/.vscode/settings.json
+```
+
+### 2. Local Modifications (Overlaid with Skip-Worktree)
+Files that DON'T match `.gitignore` patterns are treated as overlays.
+
+**How it works:**
+- Put the file in your private repo
+- dotman auto-creates a backup copy in private repo `backups/` (if it doesn't exist)
+- The file is applied to your working repo
+- If the file is git-tracked, dotman uses `--skip-worktree` to prevent accidental commits
+- Your local changes won't show up in `git status` or `git diff`
+
+**Example:**
+```
+$SRC/config/database.yml  →  (overlays) $DST/config/database.yml
+                          →  (backup stored in) $SRC/backups/config/database.yml
 ```
 
 ## Setup
 
-### Configuration
-
-`dotman` needs to know two paths:
-- **SRC**: Your private repo with dotfiles (e.g., `~/dotfiles/private`)
-- **DST**: Your working directory (e.g., `~/work-project`)
-
-Configuration is loaded in this order (first found wins):
-
-1. **`.dotmanrc` file** (recommended for per-project config):
-   ```bash
-   SRC=/home/wware/dotfiles/private
-   DST=/home/wware/work-project
-   ```
-
-2. **Environment variables**:
-   ```bash
-   export DOTMAN_SRC=~/dotfiles/private
-   export DOTMAN_DST=~/work-project
-   ```
-
-3. **`.env` file**:
-   ```bash
-   DOTMAN_SRC=/home/wware/dotfiles/private
-   DOTMAN_DST=/home/wware/work-project
-   ```
-
-### Initial Setup
-
-1. Clone this private repo:
-   ```bash
-   cd ~
-   git clone <private-repo-url> dotfiles
-   ```
-
-2. Create configuration (choose one method):
-   ```bash
-   # Option 1: .dotmanrc file (recommended)
-   cd ~/dotfiles
-   cat > .dotmanrc << EOF
-   SRC=$HOME/dotfiles/private
-   DST=$HOME/work-project
-   EOF
-
-   # Option 2: Environment variables in your shell rc
-   echo 'export DOTMAN_SRC=~/dotfiles/private' >> ~/.bashrc
-   echo 'export DOTMAN_DST=~/work-project' >> ~/.bashrc
-   ```
-
-3. Run the dirty command to create symlinks and apply local modifications:
-   ```bash
-   cd ~/dotfiles
-   ./dotman dirty
-   ```
-
-### Using from PATH
-
-Once configured, you can put `dotman` on your PATH for use anywhere:
+### 1. Create Your Private Repo
 
 ```bash
-# Copy or symlink to a directory in your PATH
-sudo ln -s ~/dotfiles/dotman /usr/local/bin/dotman
-
-# Now use from any directory (if using .dotmanrc in that directory)
-cd ~/work-project
-dotman status
+git clone <your-private-repo-url> <path-to-private-repo>
+cd <path-to-private-repo>
 ```
 
-That's it! `dotman` will automatically:
-- Discover all files in `private/`
-- Create symlinks for files that match `.gitignore` patterns (private files)
-- Apply local modifications from `backups/` directory (overlay files)
-- Handle all git skip-worktree operations transparently
+### 2. Configure Paths
 
-## Working with Private Files
+Create a `.dotmanrc` file (recommended) or use environment variables:
 
-### Adding New Private Files
-
-1. Create the file in `private/` with the same relative path
-2. Add the file to `work-project/.gitignore` (so it's treated as a symlink)
-3. Run `./dotman dirty` to create the symlink
-
-The tool will automatically discover the new file and create the symlink based on the `.gitignore` pattern.
-
-### Editing Private Files
-
-Just edit them normally - they're symlinked, so changes automatically go to the private repo. Commit and push to preserve your changes.
-
-## Working with Local Modifications
-
-These are files that **are** tracked in the shared repo, but you want to make local changes that shouldn't be committed.
-
-### Viewing Your Local Changes
-
+**Option A: .dotmanrc file**
 ```bash
-./dotman diff
+cat > .dotmanrc << EOF
+SRC=/path/to/your/private-repo
+DST=/path/to/your/work-project
+EOF
 ```
 
-Shows a clean diff of all your local modifications.
-
-### Viewing Current Status
-
+**Option B: Environment variables**
 ```bash
-./dotman status
+export DOTMAN_SRC=/path/to/your/private-repo
+export DOTMAN_DST=/path/to/your/work-project
 ```
 
-Shows which files are symlinked, which have local modifications, and their protection status.
-
-### Adding New Local Modifications
-
-**Method 1: Automatic (Recommended)**
-1. Create your modified file directly in the private repo with the same relative path as the target
-2. Run `./dotman dirty` - this will automatically create a backup and apply the overlay to the working directory
-3. **Make all further edits in the working directory** - the overlay is now active there
-4. Your changes in the working directory are protected by skip-worktree and won't be committed
-
-**Note**: As a casual user, you never need to touch the `/backups` directory - dotman manages it automatically. After initial setup, do all your editing in the working directory, not in the private repo.
-
-**Method 2: Manual Backup**
-1. Make your changes to a tracked file in the working directory
-2. Copy it to `backups/` with the same relative path in the private repo
-3. Run `./dotman dirty` to apply the changes
-
-**Example**: To overlay `/foo/bar/baz.py` in your working directory:
-- **Automatic**: Create `/foo/bar/baz.py` in private repo → run `dotman dirty`
-- **Manual**: Create `/backups/foo/bar/baz.py` in private repo → run `dotman dirty`
-
-The tool automatically detects files in the private repo and `backups/` directory and applies them with proper git protection.
-
-### How Local Modifications Work
-
-Local modifications are automatically protected using git's `--skip-worktree` feature, which:
-- Keeps files tracked by git but ignores local changes
-- Prevents accidental commits of your private modifications
-- Allows free editing without git noticing
-
-**All skip-worktree operations are handled automatically by `dotman`** - you never need to run git commands manually.
-
-**Important**: If upstream changes these files (someone else commits to them), you'll need to:
-1. `./dotman clean` (to remove local modifications)
-2. `git pull` (to get the latest changes)
-3. `./dotman dirty` (to reapply your modifications)
-
-### Completely Removing dotman
-
-If you want to completely remove all dotman modifications and return the working directory to its original state:
-
-```bash
-./dotman clean
-```
-
-This command will:
-- Remove all symlinks created by dotman
-- Revert all git-tracked files back to their HEAD state
-- Clear all skip-worktree flags
-- Remove any untracked overlay files
-
-The command shows exactly what will be removed and asks for confirmation unless you use `--force`.
-
-**Use cases for `clean`**:
-- Testing different dotman configurations
-- Switching to a different dotfiles management approach
-- Cleaning up before uninstalling dotman
-- Preparing a clean working directory for sharing
-
-## dotman Command Reference
-
-### dotman dirty
-Sets up symlinks and applies local modifications. Run after cloning or to apply your local changes.
+### 3. Apply Your Configuration
 
 ```bash
 ./dotman dirty
 ```
 
-### dotman status
-Shows current status of all symlinks and local modifications.
+This creates all symlinks and applies local modifications.
 
+### 4. Optional: Add to PATH
+
+Make sure dotman appears on your path, either copy it (e.g. to /usr/local/bin or ~/.local/bin) or make a symlink.
+
+## Commands
+
+### `dotman dirty`
+Apply all private files (symlinks) and local modifications. Run this:
+- After initial clone
+- After `git pull` on your private repo
+- To restore your local environment
+
+### `dotman status`
+Show what files are managed:
+- ✓ Symlinks in place
+- ⚠ Local modifications applied
+- ✗ Problems detected
+
+### `dotman diff`
+Show differences for files with local modifications.
+
+### `dotman clean`
+Remove everything dotman has done:
+- Delete all symlinks
+- Revert all local modifications to HEAD
+- Clear all skip-worktree flags
+
+Use before `git pull` on the shared repo if upstream changed files you've modified locally:
 ```bash
-./dotman status
+dotman clean
+git pull
+dotman dirty
 ```
 
-### dotman diff
-Shows diffs for files with local modifications.
+## Workflows
+
+### Adding a New Private File
+
+1. Create the file in `$SRC/` with the same relative path:
+   ```bash
+   mkdir -p $DOTMAN_SRC/scripts
+   echo "#!/bin/bash" > $DOTMAN_SRC/scripts/debug.sh
+   ```
+
+2. Make sure it matches a `.gitignore` pattern (usually already there):
+   ```bash
+   # Verify it's in .gitignore
+   grep "scripts/debug.sh" $DOTMAN_DST/.gitignore
+   ```
+
+3. Run dirty:
+   ```bash
+   dotman dirty
+   ```
+
+The symlink is created automatically.
+
+### Adding a Local Modification
+
+1. Create the file in `$SRC/` with the same relative path:
+   ```bash
+   mkdir -p $DOTMAN_SRC/config
+   cp $DOTMAN_DST/config/database.yml $DOTMAN_SRC/config/database.yml
+   # Edit $DOTMAN_SRC/config/database.yml with your changes
+   ```
+
+2. Run dirty:
+   ```bash
+   dotman dirty
+   ```
+
+dotman auto-creates the backup and applies your changes with skip-worktree protection.
+
+### Editing Existing Files
+
+**Private files (symlinked):** Just edit them directly - they're symlinked, so changes go straight to your private repo.
+
+**Local modifications (overlaid):**
+- Edit in the working directory OR edit in `$SRC/` directory
+- If you edit in working directory, copy changes back:
+  ```bash
+  cp $DOTMAN_DST/config/database.yml $DOTMAN_SRC/config/database.yml
+  ```
+- Commit to your private repo
+
+### Handling Upstream Changes
+
+If upstream changes a file you've modified locally:
 
 ```bash
-./dotman diff
+dotman clean           # Clean slate
+git pull               # Get upstream changes
+dotman dirty           # Reapply your modifications
 ```
 
-### dotman clean
-Completely removes all dotman modifications from the working directory. This reverts all git changes back to HEAD and deletes all symlinks.
+If there are conflicts, manually merge your `$SRC/` file with the new upstream version.
 
-```bash
-./dotman clean           # Interactive removal with confirmation
-./dotman clean --force   # Skip confirmation prompt
+## How Skip-Worktree Protection Works
+
+For local modifications, dotman uses git's `--skip-worktree` feature:
+- The file remains tracked by git
+- Local changes are invisible to git (won't show in `git status`)
+- Prevents accidental commits of your private tweaks
+- All skip-worktree operations are automatic - you never run git commands manually
+
+## Why dotman?
+
+**Before dotman:**
+- Manual file lists to maintain
+- Complex shell scripts for each project
+- Forgetting which files are "special"
+- Accidentally committing private changes
+
+**With dotman:**
+- Auto-discovery based on directory structure
+- Single tool, intuitive commands
+- Clear status at a glance
+- Impossible to accidentally commit protected files
+- Version control for private development files
+- Portable setup across machines
+
+## Configuration Files
+
+dotman looks for configuration in this order (first found wins):
+1. `.dotmanrc` in current directory
+2. Environment variables `DOTMAN_SRC` and `DOTMAN_DST`
+3. `.env` file in current directory
+
+## Example Structure
+
 ```
+<private-repo>/                # Your private repo (SRC points to <private-repo>)
+├── .dotmanrc                  # Configuration
+├── .vscode/
+│   └── settings.json      # In .gitignore → will be symlinked
+├── BrainDump.md           # In .gitignore → will be symlinked
+├── scripts/
+│   └── debug.sh           # In .gitignore → will be symlinked
+├── config/
+│   └── database.yml       # NOT in .gitignore → will be overlaid
+├── backups/               # Auto-created backups for overlaid files
+│   └── config/
+│       └── database.yml   # Backup of overlay file
 
-**Warning**: This command permanently removes all dotman modifications. Make sure your private files are committed to the private repo before running this command.
+<work-project>/                # Your working directory (DST)
+├── .gitignore                 # Patterns determine symlink vs overlay
+├── .vscode/
+│   └── settings.json          # → symlink to <private-repo>/vscode/settings.json
+├── BrainDump.md               # → symlink to <private-repo>/BrainDump.md
+├── scripts/
+│   └── debug.sh               # → symlink to <private-repo>/scripts/debug.sh
+└── config/
+    └── database.yml           # Modified version applied, skip-worktree enabled
+```
 
 ## Quick Reference
 
 ```bash
 # Fresh setup on new machine
-cd ~
-git clone <private-repo-url> dotfiles
-cd dotfiles
+git clone <private-repo-url> <path-to-private-repo>
+cd <path-to-private-repo>
 ./dotman dirty
 
-# See current status
-./dotman status
+# Daily use
+dotman status              # What's managed?
+dotman diff                # What did I change?
 
-# See what you've changed
-./dotman diff
+# Before pulling shared repo changes
+dotman clean
+git pull
+dotman dirty
 
-# Completely remove all dotman modifications
-./dotman clean
+# View this help
+dotman --help
 ```
-
-## Benefits
-
-- **Auto-discovery**: No manual file lists to maintain - just add files and they're detected
-- **Simple commands**: Single tool with intuitive commands replaces multiple complex scripts
-- **Transparent git operations**: All skip-worktree complexity hidden from users
-- **Version control for private files**: Track your debugging scripts, notes, and local configs
-- **Separate change history**: Your private tweaks don't clutter the shared repo's history
-- **Easy cleanup**: Return to clean state with `clean`, reapply changes with `dirty`
-- **Portable setup**: Clone on a new machine and run one command to get working
-- **Clear separation**: Physical separation between public and private files
-
-## How It Works
-
-The `dotman` tool provides a much simpler user experience by:
-
-1. **Auto-discovering files** by scanning `private/` directory structure
-2. **Using .gitignore patterns** to automatically determine:
-   - Files matching `.gitignore` → Create symlinks (private files)
-   - Files in `backups/` directory → Apply as overlays (local modifications)
-3. **Handling all git operations** transparently (no more manual skip-worktree commands)
-4. **Providing clear status** with ✓, ⚠, ✗ indicators for easy troubleshooting
